@@ -1,0 +1,114 @@
+name: rag-engine
+
+services:
+  postgres:
+    restart: unless-stopped
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rag
+    ports:
+      # Host 5433 avoids a local PostgreSQL already listening on 5432.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    restart: unless-stopped
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      # Host 6380 avoids a local Redis already listening on 6379.
+      - "6380:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    restart: unless-stopped
+    # The official minio/minio Docker Hub repository was removed and
+    # quay.io/minio/minio now requires authentication; this archived Bitnami
+    # image runs the same MinIO server.
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_SKIP_CLIENT: "yes"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/bitnami/minio/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    restart: unless-stopped
+    image: rag-engine-api
+    build: .
+    env_file:
+      - .env
+    # Inside the compose network the services use their native ports.
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rag_app:rag_app@postgres:5432/rag
+      DATABASE_MIGRATION_URL: postgresql+asyncpg://rag_owner:rag_owner@postgres:5432/rag
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT_URL: http://minio:9000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    restart: unless-stopped
+    image: rag-engine-api
+    command: ["python", "-m", "app.workers.ingest"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rag_app:rag_app@postgres:5432/rag
+      DATABASE_MIGRATION_URL: postgresql+asyncpg://rag_owner:rag_owner@postgres:5432/rag
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT_URL: http://minio:9000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
