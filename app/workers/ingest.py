@@ -25,7 +25,7 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from app.config import Settings
 from app.db import create_engine, create_sessionmaker
 from app.logging import configure_logging
-from app.services.embeddings import build_embedding_provider
+from app.services.embeddings import QueryCache, build_embedding_provider
 from app.services.ingestion import (
     Outcome,
     WorkerContext,
@@ -195,13 +195,15 @@ async def _worker_loop(ctx: WorkerContext, redis: Redis) -> None:
 async def run() -> None:
     settings = Settings()  # type: ignore[call-arg]
     engine = create_engine(settings, application_name="rag-worker", statement_timeout_ms=120_000)
+    redis = Redis.from_url(settings.redis_url, decode_responses=True)
     ctx = WorkerContext(
         settings=settings,
         sessionmaker=create_sessionmaker(engine),
         storage=StorageService(settings),
-        embeddings=build_embedding_provider(settings),
+        # The worker's Redis doubles as the query-embedding cache; with
+        # decode_responses=True the client matches the QueryCache surface.
+        embeddings=build_embedding_provider(settings, cache=cast("QueryCache", redis)),
     )
-    redis = Redis.from_url(settings.redis_url, decode_responses=True)
     try:
         await _worker_loop(ctx, redis)
     finally:
