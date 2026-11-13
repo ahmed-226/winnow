@@ -1,7 +1,7 @@
 [project]
-name = "rag-engine"
+name = "winnow"
 version = "0.1.0"
-description = "Multi-tenant hybrid search and retrieval backend"
+description = "Winnow: multi-tenant hybrid search and retrieval backend"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.14",

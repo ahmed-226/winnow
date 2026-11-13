@@ -75,7 +75,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging(settings)
 
     app = FastAPI(
-        title="Multi-Tenant Hybrid Search & RAG Engine",
+        title="Winnow",
         version="0.1.0",
         lifespan=lifespan,
     )

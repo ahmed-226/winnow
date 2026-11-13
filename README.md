@@ -1,6 +1,16 @@
-# Multi-Tenant Hybrid Search & RAG Engine
+# Winnow
 
-Tenant-isolated ingestion and hybrid retrieval backend: PDF/Markdown/HTML in, ACL-safe
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)
+![pgvector](https://img.shields.io/badge/pgvector-0.8+-336791?logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-Streams-DC382D?logo=redis&logoColor=white)
+![MinIO](https://img.shields.io/badge/MinIO-S3-C72E49?logo=minio&logoColor=white)
+![Gemini](https://img.shields.io/badge/Gemini-embedding--001-4285F4?logo=google&logoColor=white)
+![uv](https://img.shields.io/badge/uv-managed-DE5FE9?logo=astral&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+
+**Winnow** — a multi-tenant hybrid search & RAG engine: PDF/Markdown/HTML in, ACL-safe
 ranked chunks out (pgvector dense + PostgreSQL full-text, fused with RRF). No LLM answer
 generation.
 
@@ -113,7 +123,7 @@ Rejected requests are counted in `rate_limit_rejections_total{scope}`.
 |---|---|---|
 | `documents_uploaded_total` | counter | `source_type`, `duplicate` |
 | `document_ingest_duration_seconds` | histogram | `source_type`, `outcome` |
-| `document_ingest_failures_total` | counter | `error_code` (§9.4 taxonomy) |
+| `document_ingest_failures_total` | counter | `error_code` (ingestion error taxonomy) |
 | `search_requests_total` | counter | `mode`, `outcome` |
 | `search_duration_seconds` | histogram | `mode` |
 | `search_results_count` | histogram | — |
@@ -159,12 +169,12 @@ Schedule it (cron / Task Scheduler) in any real deployment.
 Postgres (physical layout irrelevant, logical dump is enough for v1):
 
 ```bash
-docker exec rag-engine-postgres-1 pg_dump -U postgres -d rag -Fc -f /tmp/rag.dump
-docker exec rag-engine-postgres-1 createdb -U postgres rag_restore_check
-docker exec rag-engine-postgres-1 pg_restore -U postgres -d rag_restore_check /tmp/rag.dump
+docker exec winnow-postgres-1 pg_dump -U postgres -d rag -Fc -f /tmp/rag.dump
+docker exec winnow-postgres-1 createdb -U postgres rag_restore_check
+docker exec winnow-postgres-1 pg_restore -U postgres -d rag_restore_check /tmp/rag.dump
 # verify: compare row counts, confirm pgvector extension, HNSW/GIN indexes, and the
 # 6 RLS policies exist in the restored database, then drop it
-docker exec rag-engine-postgres-1 dropdb -U postgres rag_restore_check
+docker exec winnow-postgres-1 dropdb -U postgres rag_restore_check
 ```
 
 MinIO: `mc alias set local http://localhost:9000 minioadmin minioadmin && mc mirror local/rag-documents /backup/minio` — restore by mirroring back; the DB `storage_key` values
@@ -197,27 +207,31 @@ this measures request overhead; hybrid SQL latency at scale is benchmarked separ
 | Uploads return 503 | MinIO down | `docker compose up -d minio`; search still works (does not need MinIO) |
 | Disk filling up | Postgres/MinIO volumes | Run `scripts/purge.py`; expand volume |
 
-## Security checklist
+## Security
 
-Status after Phase 6 review; each item is enforced and covered by tests:
+Isolation is enforced in depth, not just in application code:
 
-- [x] Tenant ID and roles come only from the validated JWT; `X-Tenant-ID`/`X-Roles` ignored.
-- [x] Every tenant-table query carries an explicit `tenant_id` predicate, plus forced RLS with `NOBYPASSRLS` runtime role.
-- [x] Tenant context is transaction-local (`set_config(..., true)`), never session-level.
-- [x] Cross-tenant or ACL-hidden resources return `404`, not `403`.
-- [x] `tenant_admin` bypasses document ACLs only, never tenant isolation.
-- [x] Empty ACL means tenant-wide; a member cannot grant a role they do not hold; `tenant_admin` never appears in document ACLs.
-- [x] Last active `tenant_admin` cannot be removed (`409`).
-- [x] Inactive users are rejected on every protected operation (DB recheck per request).
-- [x] Refresh tokens are stored hashed, rotated per use, and family-revoked on reuse.
-- [x] Upload size enforced while streaming; MIME validated by magic bytes; file names sanitized for object keys.
-- [x] Bucket is private; SQL fully parameterized; user text reaches FTS only via `websearch_to_tsquery`.
-- [x] Error responses never include SQL, stack traces, or secrets.
-- [x] Secrets from environment; `.env` gitignored; JWT secret ≥ 32 bytes outside development.
-- [x] Login, register, upload, and search are rate-limited (`429` + `Retry-After`).
-- [x] CORS is an explicit allowlist.
-- [x] Backups documented and a restore drill verified (pgvector, indexes, RLS policies).
-- [x] Logs exclude document text, query text, tokens, and passwords (lengths and hashes only).
+- **Identity and tenancy** come only from the signed JWT; `X-Tenant-ID` and `X-Roles`
+  headers are ignored. Roles are re-read from the database on every request, so a
+  revoked or deactivated account takes effect immediately.
+- **Tenant boundaries** are enforced twice: every query carries an explicit
+  `tenant_id` predicate, and PostgreSQL row-level security on a `NOBYPASSRLS` runtime
+  role enforces the same boundary if a predicate is ever missed. Tenant context is
+  transaction-local, so pooled connections cannot leak it.
+- **Authorization failures are indistinguishable**: cross-tenant and ACL-hidden
+  resources both return `404`. Empty document ACLs mean tenant-wide; `tenant_admin`
+  bypasses document ACLs but never tenant isolation.
+- **Credentials**: passwords are Argon2-hashed; refresh tokens are stored hashed,
+  rotated on every use, and family-revoked on reuse.
+- **Ingestion** validates upload size while streaming, verifies MIME type by magic
+  bytes, sanitizes file names, and keeps the object bucket private.
+- **Input handling**: all SQL is parameterized and user text only reaches full-text
+  search through `websearch_to_tsquery`.
+- **Abuse protection**: login, registration, upload, and search are rate-limited
+  (`429` with `Retry-After`); CORS is an explicit allowlist.
+- **Operational hygiene**: secrets come from the environment, errors never expose
+  stack traces or SQL, and logs exclude document text, query text, tokens, and
+  passwords.
 
-Not in v1 (documented in plan §3.2): virus scanning, per-chunk ACLs, presigned downloads,
-dependency scanning in CI, security headers at a reverse proxy.
+Not in v1: OCR, virus scanning, per-chunk ACLs, presigned downloads, dependency
+scanning in CI, and security headers at a reverse proxy.

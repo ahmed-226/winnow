@@ -1,4 +1,4 @@
-name: rag-engine
+name: winnow
 
 services:
   postgres:
@@ -58,7 +58,7 @@ services:
 
   api:
     restart: unless-stopped
-    image: rag-engine-api
+    image: winnow-api
     build: .
     env_file:
       - .env
@@ -91,7 +91,7 @@ services:
 
   worker:
     restart: unless-stopped
-    image: rag-engine-api
+    image: winnow-api
     command: ["python", "-m", "app.workers.ingest"]
     env_file:
       - .env

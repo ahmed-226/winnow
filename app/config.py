@@ -54,7 +54,7 @@ class Settings(BaseSettings):
 
     # Auth
     jwt_secret: str = "dev-only-change-me"
-    jwt_issuer: str = "rag-engine"
+    jwt_issuer: str = "winnow"
     jwt_audience: str = "rag-api"
     access_token_ttl_seconds: int = 1_800
     refresh_token_ttl_seconds: int = 604_800
