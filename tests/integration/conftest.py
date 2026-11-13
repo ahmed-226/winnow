@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from alembic import command
 from app.config import Settings
 from app.main import create_app
+from app.services.embeddings import build_embedding_provider
 
 ROOT = Path(__file__).resolve().parents[2]
 TEST_JWT_SECRET = "integration-test-secret-that-is-long-enough"
@@ -37,6 +38,10 @@ class DatabaseHandle:
 def _setup_statements(database: str) -> list[str]:
     return [
         "CREATE EXTENSION IF NOT EXISTS vector;",
+        # Mirrors docker/postgres/init/01-roles-and-extension.sql: without
+        # this, the tenant-isolation RLS barrier blocks the GIN index for the
+        # sparse retriever (see alembic/versions/0005_fts_leakproof.py).
+        "ALTER FUNCTION pg_catalog.ts_match_vq(tsvector, tsquery) LEAKPROOF;",
         """
         DO $$
         BEGIN
@@ -187,6 +192,11 @@ async def app(test_database: DatabaseHandle) -> AsyncIterator[object]:
             await application.state.redis.aclose()
             fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
             application.state.redis = fake_redis
+            # Rebuild the query-embedding provider so its cache points at the
+            # fake Redis the tests actually use.
+            application.state.embeddings = build_embedding_provider(
+                application.state.settings, cache=fake_redis
+            )
             try:
                 yield application
             finally:

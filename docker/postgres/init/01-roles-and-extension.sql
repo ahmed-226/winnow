@@ -4,6 +4,13 @@
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- The FTS match operator is not leakproof in core, so under the
+-- tenant-isolation RLS barrier the planner would refuse the chunks_fts_gin
+-- bitmap path and scan the tenant's chunks instead. The function is a pure
+-- match with no side channels; marking it leakproof restores GIN index scans.
+-- See alembic/versions/0005_fts_leakproof.py.
+ALTER FUNCTION pg_catalog.ts_match_vq(tsvector, tsquery) LEAKPROOF;
+
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'rag_owner') THEN
