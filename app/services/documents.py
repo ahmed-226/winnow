@@ -42,8 +42,9 @@ from app.errors import (
     UnsupportedFileTypeError,
     UploadTooLargeError,
 )
-from app.models import Document, DocumentStatus
+from app.models import Document, DocumentStatus, IngestionJob
 from app.security import TENANT_ADMIN_ROLE, normalize_roles
+from app.services.ingestion import reset_job_for_reprocess
 from app.services.queue import enqueue_ingest
 from app.services.storage import StorageService
 
@@ -207,14 +208,16 @@ async def _enqueue_ingest(
     *,
     document_id: uuid.UUID,
     tenant_id: uuid.UUID,
+    job_id: uuid.UUID,
 ) -> None:
-    """Best-effort enqueue; the sweeper (Phase 3) recovers lost messages."""
+    """Best-effort enqueue; the sweeper recovers lost messages."""
     try:
         await enqueue_ingest(
             redis,
             stream=settings.ingest_stream,
             document_id=document_id,
             tenant_id=tenant_id,
+            job_id=job_id,
         )
     except Exception as exc:
         log.warning(
@@ -269,6 +272,7 @@ class DocumentService:
             )
 
             savepoint = await session.begin_nested()
+            job = IngestionJob(id=uuid.uuid4(), document_id=document_id, tenant_id=user.tenant_id)
             document = Document(
                 id=document_id,
                 tenant_id=user.tenant_id,
@@ -284,6 +288,7 @@ class DocumentService:
                 created_by=user.id,
             )
             session.add(document)
+            session.add(job)
             try:
                 await session.flush()
             except IntegrityError:
@@ -300,7 +305,11 @@ class DocumentService:
                 await savepoint.commit()
 
             await _enqueue_ingest(
-                self._settings, redis, document_id=document.id, tenant_id=user.tenant_id
+                self._settings,
+                redis,
+                document_id=document.id,
+                tenant_id=user.tenant_id,
+                job_id=job.id,
             )
 
         log.info(
@@ -443,13 +452,29 @@ class DocumentService:
         redis: Redis,
         document: Document,
     ) -> Document:
-        """Re-enqueue ingestion; job reset and chunk replacement land in Phase 3."""
+        """Reset the job to queued, mark the document pending, and enqueue.
+
+        Safe to call repeatedly: the worker replaces the old chunks in its
+        final transaction, so no duplicates can appear.
+        """
         if TENANT_ADMIN_ROLE not in user.roles:
             raise ForbiddenError("Only tenant_admin can reprocess documents.")
+        await reset_job_for_reprocess(session, document_id=document.id, tenant_id=user.tenant_id)
+        document.status = DocumentStatus.PENDING
+        await session.flush()
+        job = (
+            await session.execute(
+                select(IngestionJob).where(
+                    IngestionJob.document_id == document.id,
+                    IngestionJob.tenant_id == user.tenant_id,
+                )
+            )
+        ).scalar_one()
         await _enqueue_ingest(
             self._settings,
             redis,
             document_id=document.id,
             tenant_id=user.tenant_id,
+            job_id=job.id,
         )
         return document

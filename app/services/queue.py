@@ -21,7 +21,7 @@ async def enqueue_ingest(
     stream: str,
     document_id: uuid.UUID,
     tenant_id: uuid.UUID,
-    job_id: uuid.UUID | None = None,
+    job_id: uuid.UUID,
     max_len: int = 10_000,
 ) -> None:
     """Add an ingest message to the stream. Raises on Redis failure."""

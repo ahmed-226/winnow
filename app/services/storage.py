@@ -110,3 +110,12 @@ class StorageService:
             await self.delete_object(key=key)
         except StorageUnavailableError:
             log.warning("storage.delete_best_effort_failed", key=key)
+
+    async def download_object(self, *, key: str, file_path: str) -> None:
+        """Stream an object to a local file (worker ingestion path)."""
+
+        def _download() -> None:
+            with open(file_path, "wb") as handle:
+                self._client.download_fileobj(self.bucket, key, handle)
+
+        await self._run(functools.partial(_download))

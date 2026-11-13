@@ -70,5 +70,5 @@ no_implicit_reexport = true
 exclude = ["alembic/versions"]
 
 [[tool.mypy.overrides]]
-module = ["boto3", "botocore.*", "filetype"]
+module = ["boto3", "botocore.*", "filetype", "pymupdf"]
 ignore_missing_imports = true

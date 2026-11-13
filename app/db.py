@@ -10,11 +10,17 @@ from sqlalchemy.ext.asyncio import (
 from app.config import Settings
 
 
-def create_engine(settings: Settings, *, application_name: str = "rag-api") -> AsyncEngine:
+def create_engine(
+    settings: Settings,
+    *,
+    application_name: str = "rag-api",
+    statement_timeout_ms: int | None = None,
+) -> AsyncEngine:
     """Create the API/worker engine with a transaction statement timeout.
 
     The statement timeout is applied per connection through asyncpg so a runaway
-    query cannot hold a pooled connection indefinitely.
+    query cannot hold a pooled connection indefinitely. Worker sessions pass a
+    higher value (plan §14) so a large chunk insert is not killed mid-transaction.
     """
     return create_async_engine(
         settings.database_url,
@@ -24,7 +30,7 @@ def create_engine(settings: Settings, *, application_name: str = "rag-api") -> A
         connect_args={
             "server_settings": {
                 "application_name": application_name,
-                "statement_timeout": str(settings.db_statement_timeout_ms),
+                "statement_timeout": str(statement_timeout_ms or settings.db_statement_timeout_ms),
             }
         },
     )
