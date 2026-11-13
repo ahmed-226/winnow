@@ -42,6 +42,7 @@ from app.errors import (
     UnsupportedFileTypeError,
     UploadTooLargeError,
 )
+from app.metrics import DOCUMENTS_UPLOADED
 from app.models import Document, DocumentStatus, IngestionJob
 from app.security import TENANT_ADMIN_ROLE, normalize_roles
 from app.services.ingestion import reset_job_for_reprocess
@@ -260,6 +261,7 @@ class DocumentService:
                 session, tenant_id=user.tenant_id, file_hash=file_hash
             )
             if existing is not None:
+                DOCUMENTS_UPLOADED.labels(source_type=source_type, duplicate="true").inc()
                 return UploadResult(document=existing, duplicate=True)
 
             document_id = uuid.uuid4()
@@ -300,6 +302,7 @@ class DocumentService:
                 if winner is None:
                     raise
                 await self._storage.delete_object_quietly(key=storage_key)
+                DOCUMENTS_UPLOADED.labels(source_type=source_type, duplicate="true").inc()
                 return UploadResult(document=winner, duplicate=True)
             else:
                 await savepoint.commit()
@@ -319,6 +322,7 @@ class DocumentService:
             size_bytes=size,
             duplicate=False,
         )
+        DOCUMENTS_UPLOADED.labels(source_type=source_type, duplicate="false").inc()
         return UploadResult(document=document, duplicate=False)
 
     async def _stage_file(

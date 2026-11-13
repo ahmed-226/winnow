@@ -7,6 +7,7 @@ from fastapi import (
     Depends,
     Form,
     Query,
+    Request,
     Response,
     UploadFile,
 )
@@ -29,6 +30,7 @@ from app.schemas import (
     UploadDocumentResponse,
 )
 from app.services.documents import DocumentService
+from app.services.rate_limit import enforce_rate_limit
 from app.services.storage import StorageService
 
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
@@ -38,6 +40,7 @@ router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
 async def upload_document(
     file: UploadFile,
     response: Response,
+    request: Request,
     title: str | None = Form(default=None),
     access_roles: list[str] = Form(default=[]),
     user: CurrentUser = Depends(current_user),
@@ -45,6 +48,13 @@ async def upload_document(
     redis: Redis = Depends(get_redis),
     service: DocumentService = Depends(get_document_service),
 ) -> UploadDocumentResponse:
+    await enforce_rate_limit(
+        request.app.state.redis,
+        scope="upload",
+        key=f"rag:rl:upload:{user.id}",
+        limit=request.app.state.settings.rl_upload_per_hour,
+        window_seconds=3600,
+    )
     result = await service.upload(
         session,
         user=user,

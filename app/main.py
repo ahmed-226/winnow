@@ -9,6 +9,7 @@ import structlog
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
+from redis import Redis as SyncRedis
 from redis.asyncio import Redis
 
 from app.api.auth import router as auth_router
@@ -20,6 +21,7 @@ from app.config import Settings, get_settings
 from app.db import create_engine, create_sessionmaker
 from app.errors import install_error_handlers
 from app.logging import configure_logging, request_id_var
+from app.metrics import install_process_gauges
 from app.services.embeddings import build_embedding_provider
 from app.services.storage import StorageService
 
@@ -40,6 +42,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The API embeds queries only; the worker embeds documents with its own
     # provider instance. The Redis client doubles as the query-embedding cache.
     app.state.embeddings = build_embedding_provider(settings, cache=app.state.redis)
+    # A separate sync client feeds the scrape-time gauges (queue depth/pending,
+    # DB pool usage); the worker process has no /metrics endpoint, so the API
+    # observes the queue on its behalf.
+    metrics_redis = SyncRedis.from_url(settings.redis_url, decode_responses=True)
+    install_process_gauges(
+        engine,
+        metrics_redis,
+        stream=settings.ingest_stream,
+        group=settings.ingest_group,
+    )
     try:
         await app.state.storage.ensure_bucket()
     except Exception as exc:  # pragma: no cover - depends on MinIO availability
@@ -53,6 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await app.state.redis.aclose()
+        metrics_redis.close()
         await engine.dispose()
         log.info("app.stopped")
 

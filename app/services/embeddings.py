@@ -28,6 +28,7 @@ from google.genai.types import HttpOptions as GenaiHttpOptions
 from google.genai.types import HttpRetryOptions as GenaiHttpRetryOptions
 
 from app.config import Settings
+from app.metrics import EMBEDDING_DURATION, EMBEDDING_REQUESTS
 
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _BACKOFF_INITIAL_SECONDS = 1.0
@@ -283,6 +284,18 @@ class GeminiEmbeddingProvider:
     # ------------------------------------------------------------------ internals
 
     async def _request(self, contents: list[str], task_type: str) -> list[list[float]]:
+        operation = "document" if task_type == self._settings.embedding_document_task else "query"
+        started = time.monotonic()
+        try:
+            result = await self._request_with_retries(contents, task_type)
+        except EmbeddingError:
+            EMBEDDING_REQUESTS.labels(operation=operation, status="error").inc()
+            raise
+        EMBEDDING_REQUESTS.labels(operation=operation, status="ok").inc()
+        EMBEDDING_DURATION.labels(operation=operation).observe(time.monotonic() - started)
+        return result
+
+    async def _request_with_retries(self, contents: list[str], task_type: str) -> list[list[float]]:
         await self._limiter.acquire()
         max_retries = self._settings.embedding_max_retries
         for attempt in range(1, max_retries + 1):

@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from app.errors import StorageUnavailableError
+from app.metrics import INGEST_DURATION, INGEST_FAILURES
 from app.models import Document, DocumentChunk, DocumentStatus, IngestionJob, JobStatus
 from app.services.chunking import Chunk, chunk_blocks, split_for_token_limit
 from app.services.embeddings import (
@@ -172,10 +173,13 @@ async def process_job(ctx: WorkerContext, *, job_id: uuid.UUID, tenant_id: uuid.
         prepared = await _prepare_chunks(ctx, claim)
         outcome = await _write_chunks(ctx, claim.document_id, tenant_id, prepared)
     except ParseFailure as failure:
+        INGEST_FAILURES.labels(error_code=failure.code).inc()
         return await _handle_failure(ctx, job_id=job_id, tenant_id=tenant_id, failure=failure)
     except EmbeddingError as failure:
+        INGEST_FAILURES.labels(error_code=failure.code).inc()
         return await _handle_failure(ctx, job_id=job_id, tenant_id=tenant_id, failure=failure)
     except StorageUnavailableError:
+        INGEST_FAILURES.labels(error_code="download_failed").inc()
         return await _handle_failure(
             ctx,
             job_id=job_id,
@@ -184,6 +188,7 @@ async def process_job(ctx: WorkerContext, *, job_id: uuid.UUID, tenant_id: uuid.
         )
     except Exception as failure:
         log.warning("ingest.unexpected_error", error_type=type(failure).__name__)
+        INGEST_FAILURES.labels(error_code="parse_failed").inc()
         return await _handle_failure(
             ctx,
             job_id=job_id,
@@ -193,12 +198,14 @@ async def process_job(ctx: WorkerContext, *, job_id: uuid.UUID, tenant_id: uuid.
             ),
         )
 
+    duration = time.monotonic() - started
+    INGEST_DURATION.labels(source_type=claim.source_type, outcome=outcome.value).observe(duration)
     log.info(
         "document_ingested",
         document_id=str(claim.document_id),
         tenant_id=str(tenant_id),
         chunk_count=len(prepared),
-        duration_ms=round((time.monotonic() - started) * 1000),
+        duration_ms=round(duration * 1000),
     )
     return outcome
 

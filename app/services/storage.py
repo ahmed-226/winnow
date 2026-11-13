@@ -119,3 +119,16 @@ class StorageService:
                 self._client.download_fileobj(self.bucket, key, handle)
 
         await self._run(functools.partial(_download))
+
+    async def list_object_keys(self, *, prefix: str = "") -> list[str]:
+        """Paginated key listing; used by the orphan-object scan."""
+
+        def _list() -> list[str]:
+            keys: list[str] = []
+            paginator = self._client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                keys.extend(entry["Key"] for entry in page.get("Contents", []))
+            return keys
+
+        result: list[str] = await self._run(_list)
+        return result

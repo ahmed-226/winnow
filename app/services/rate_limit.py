@@ -5,6 +5,7 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from app.errors import RateLimitedError
+from app.metrics import RATE_LIMIT_REJECTIONS
 
 log = structlog.get_logger(__name__)
 
@@ -36,4 +37,5 @@ async def enforce_rate_limit(
 
     if count > limit:
         retry_after = ttl if ttl and ttl > 0 else window_seconds
+        RATE_LIMIT_REJECTIONS.labels(scope=scope).inc()
         raise RateLimitedError(retry_after=retry_after)

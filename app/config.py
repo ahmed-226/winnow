@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     rl_upload_per_hour: int = 30
     rl_search_per_minute: int = 120
 
+    # Maintenance (scripts/purge.py)
+    soft_delete_retention_days: int = 30
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import shutil
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -166,6 +168,27 @@ async def reset_database(test_database: DatabaseHandle) -> AsyncIterator[None]:
     yield
 
 
+@asynccontextmanager
+async def _app_with_fake_redis(
+    test_database: DatabaseHandle, **overrides: object
+) -> AsyncIterator[object]:
+    with mock_aws():
+        application = create_app(make_settings(test_database, **overrides))
+        async with application.router.lifespan_context(application):
+            await application.state.redis.aclose()
+            fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+            application.state.redis = fake_redis
+            # Rebuild the query-embedding provider so its cache points at the
+            # fake Redis the tests actually use.
+            application.state.embeddings = build_embedding_provider(
+                application.state.settings, cache=fake_redis
+            )
+            try:
+                yield application
+            finally:
+                await fake_redis.aclose()
+
+
 def make_settings(test_database: DatabaseHandle, **overrides: object) -> Settings:
     values: dict[str, object] = {
         "app_env": "test",
@@ -184,10 +207,12 @@ def make_settings(test_database: DatabaseHandle, **overrides: object) -> Setting
     return Settings(_env_file=None, **values)  # type: ignore[arg-type]
 
 
-@pytest_asyncio.fixture
-async def app(test_database: DatabaseHandle) -> AsyncIterator[object]:
+@asynccontextmanager
+async def _app_with_fake_redis(
+    test_database: DatabaseHandle, **overrides: object
+) -> AsyncIterator[object]:
     with mock_aws():
-        application = create_app(make_settings(test_database))
+        application = create_app(make_settings(test_database, **overrides))
         async with application.router.lifespan_context(application):
             await application.state.redis.aclose()
             fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
@@ -201,6 +226,23 @@ async def app(test_database: DatabaseHandle) -> AsyncIterator[object]:
                 yield application
             finally:
                 await fake_redis.aclose()
+
+
+@pytest_asyncio.fixture
+async def app(test_database: DatabaseHandle) -> AsyncIterator[object]:
+    async with _app_with_fake_redis(test_database) as application:
+        yield application
+
+
+@pytest_asyncio.fixture
+async def app_factory(
+    test_database: DatabaseHandle,
+) -> AsyncIterator[Callable[..., object]]:
+    """Build a per-test app with custom settings overrides (e.g. rate limits).
+
+    Usage: `async with app_factory(rl_search_per_minute=2) as application:`.
+    """
+    yield functools.partial(_app_with_fake_redis, test_database)
 
 
 @pytest_asyncio.fixture

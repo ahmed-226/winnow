@@ -88,3 +88,133 @@ tenant-wide and `tenant_admin` bypasses document ACLs but never tenant isolation
 All errors use `application/problem+json` (`type`, `title`, `status`, `detail`, optional
 `errors`) and include a `request_id`. Validation failures return `422`; unexpected failures
 return a generic `500`.
+
+## Rate limits
+
+Fixed-window counters in Redis, per user and route (`429` with a `Retry-After` header).
+A Redis outage fails open: authentication still applies, and a cache outage never locks
+users out.
+
+| Route | Limit | Window | Key |
+|---|---|---|---|
+| `POST /api/v1/auth/login` | `RL_LOGIN_PER_MINUTE` (10) | 60 s | IP + tenant + email |
+| `POST /api/v1/auth/register-tenant` | `RL_REGISTER_PER_HOUR` (5) | 3600 s | client IP |
+| `POST /api/v1/documents` | `RL_UPLOAD_PER_HOUR` (30) | 3600 s | user id |
+| `POST /api/v1/search` | `RL_SEARCH_PER_MINUTE` (120) | 60 s | user id |
+
+Rejected requests are counted in `rate_limit_rejections_total{scope}`.
+
+## Metrics
+
+`GET /metrics` serves Prometheus, combining the HTTP instrumentator
+(`http_requests_total`, `http_request_duration_seconds`) with application metrics:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `documents_uploaded_total` | counter | `source_type`, `duplicate` |
+| `document_ingest_duration_seconds` | histogram | `source_type`, `outcome` |
+| `document_ingest_failures_total` | counter | `error_code` (§9.4 taxonomy) |
+| `search_requests_total` | counter | `mode`, `outcome` |
+| `search_duration_seconds` | histogram | `mode` |
+| `search_results_count` | histogram | — |
+| `embedding_requests_total` | counter | `operation` (document/query), `status` |
+| `embedding_request_duration_seconds` | histogram | `operation` |
+| `rate_limit_rejections_total` | counter | `scope` |
+| `db_pool_in_use` | gauge | — |
+| `queue_depth` | gauge | `stream` (API observes Redis for the worker) |
+| `queue_pending_messages` | gauge | `group` |
+
+Alert-worthy: queue depth growing for 10 minutes, ingest failure rate > 5%, search p95
+> 1 s, embedding 429 rate > 10%, `readyz` failing.
+
+Label values are bounded enums — never document text, query text, or tenant IDs.
+
+## Operations
+
+### Ingestion worker
+
+`uv run python -m app.workers.ingest` (or `docker compose up -d worker`). The DB job row
+is authoritative; every 60 s the sweeper re-enqueues jobs whose Redis message was lost
+(`queued` > 2 min stale) or whose worker died (`running` > 15 min stale), and `XAUTOCLAIM`
+recovers messages abandoned by dead consumers. Jobs that exhaust their attempts are
+dead-lettered to `rag:ingest:dead` and marked `failed` with a reason in
+`documents.error_message`; `POST /api/v1/documents/{id}/reprocess` (admin) retries them.
+
+### Soft-delete purge and orphan objects
+
+Soft-deleted documents are kept for `SOFT_DELETE_RETENTION_DAYS` (default 30), then
+hard-deleted together with their stored object:
+
+```bash
+uv run python scripts/purge.py                  # purge expired + report orphan objects
+uv run python scripts/purge.py --delete-orphans # also delete unreferenced bucket objects
+```
+
+Orphan objects (leftovers from failed uploads or failed deletes) are reported by default;
+deletion is opt-in. The script runs as `rag_owner` (BYPASSRLS) and needs MinIO up.
+Schedule it (cron / Task Scheduler) in any real deployment.
+
+### Backup and restore
+
+Postgres (physical layout irrelevant, logical dump is enough for v1):
+
+```bash
+docker exec rag-engine-postgres-1 pg_dump -U postgres -d rag -Fc -f /tmp/rag.dump
+docker exec rag-engine-postgres-1 createdb -U postgres rag_restore_check
+docker exec rag-engine-postgres-1 pg_restore -U postgres -d rag_restore_check /tmp/rag.dump
+# verify: compare row counts, confirm pgvector extension, HNSW/GIN indexes, and the
+# 6 RLS policies exist in the restored database, then drop it
+docker exec rag-engine-postgres-1 dropdb -U postgres rag_restore_check
+```
+
+MinIO: `mc alias set local http://localhost:9000 minioadmin minioadmin && mc mirror local/rag-documents /backup/minio` — restore by mirroring back; the DB `storage_key` values
+match object keys, so no re-pointing is needed. Verify a restore by fetching one object.
+
+### Load test
+
+```bash
+uv run python scripts/loadtest.py --tenant acme --email admin@acme.example \
+    --password '...' --concurrency 10 --duration 30
+```
+
+Reports req/s and p50/p95/p99/max. For load testing, temporarily raise
+`RL_SEARCH_PER_MINUTE` (or expect and accept the `429` tail — the script reports its
+count). Baseline on a dev box: see `dev/docs/phase-6-implementation.md`.
+
+### Runbook
+
+| Symptom | Check | Action |
+|---|---|---|
+| Uploads return 202 but never become `ready` | `queue_depth`, worker logs, `ingestion_jobs` | Start the worker; check Gemini key/quota; check sweeper |
+| Search returns fewer results than expected | `mode`, `dense_rank`/`sparse_rank` in the response | Check document ACL and status (`ready` only); raise `SEARCH_CANDIDATES`/`HNSW_EF_SEARCH` |
+| Search is slow | `search_duration_seconds`, DB pool | Tune `HNSW_EF_SEARCH`; check DB CPU; `db_pool_in_use` near pool size → raise `DB_POOL_SIZE` |
+| Documents stuck in `processing` | `ingestion_jobs.updated_at` | Sweeper requeues after 15 min; otherwise `POST .../reprocess` |
+| Cross-tenant data suspected | logs, `tenant_id` predicates | Treat as an incident: revoke tokens, audit queries, restore isolation tests |
+| Gemini 429 storm | `embedding_requests_total{status="error"}` | Lower `EMBEDDING_CONCURRENCY`/`EMBEDDING_BATCH_SIZE`; reprocess failed docs |
+| Uploads return 503 | MinIO down | `docker compose up -d minio`; search still works (does not need MinIO) |
+| Disk filling up | Postgres/MinIO volumes | Run `scripts/purge.py`; expand volume |
+
+## Security checklist
+
+Status after Phase 6 review; each item is enforced and covered by tests:
+
+- [x] Tenant ID and roles come only from the validated JWT; `X-Tenant-ID`/`X-Roles` ignored.
+- [x] Every tenant-table query carries an explicit `tenant_id` predicate, plus forced RLS with `NOBYPASSRLS` runtime role.
+- [x] Tenant context is transaction-local (`set_config(..., true)`), never session-level.
+- [x] Cross-tenant or ACL-hidden resources return `404`, not `403`.
+- [x] `tenant_admin` bypasses document ACLs only, never tenant isolation.
+- [x] Empty ACL means tenant-wide; a member cannot grant a role they do not hold; `tenant_admin` never appears in document ACLs.
+- [x] Last active `tenant_admin` cannot be removed (`409`).
+- [x] Inactive users are rejected on every protected operation (DB recheck per request).
+- [x] Refresh tokens are stored hashed, rotated per use, and family-revoked on reuse.
+- [x] Upload size enforced while streaming; MIME validated by magic bytes; file names sanitized for object keys.
+- [x] Bucket is private; SQL fully parameterized; user text reaches FTS only via `websearch_to_tsquery`.
+- [x] Error responses never include SQL, stack traces, or secrets.
+- [x] Secrets from environment; `.env` gitignored; JWT secret ≥ 32 bytes outside development.
+- [x] Login, register, upload, and search are rate-limited (`429` + `Retry-After`).
+- [x] CORS is an explicit allowlist.
+- [x] Backups documented and a restore drill verified (pgvector, indexes, RLS policies).
+- [x] Logs exclude document text, query text, tokens, and passwords (lengths and hashes only).
+
+Not in v1 (documented in plan §3.2): virus scanning, per-chunk ACLs, presigned downloads,
+dependency scanning in CI, security headers at a reverse proxy.
