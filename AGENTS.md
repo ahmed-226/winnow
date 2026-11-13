@@ -8,18 +8,19 @@ with RRF). There is **no LLM answer generation**: `/search` returns ranked chunk
 
 ## Source of truth
 
-- Spec: `dev/docs/implementation-plan.md`. Read the relevant section before changing
-  behavior: decisions §2, data model §7, tenancy/RLS §8, ingestion §9, chunking §10,
-  embeddings §11, search §12, API §13, config §14, testing §17, phases §19.
-- Background: `dev/docs/overview.md`. Where the two conflict, the plan wins.
-- §2 "Decisions" is settled. §22 open questions do not block Phases 0–5.
+- Spec: `dev/docs/implementation-plan.md` (local, gitignored). Read the relevant section
+  before changing behavior: decisions §2, data model §7, tenancy/RLS §8, ingestion §9,
+  chunking §10, embeddings §11, search §12, API §13, config §14, testing §17, phases §19.
+- Background: `dev/docs/overview.md` (local). Where the two conflict, the plan wins.
+- §2 "Decisions" is settled. §22 open questions do not block Phases 0–6.
 
 ## Status
 
-Greenfield: only the two docs above exist. No code, manifests, migrations, or CI yet.
-Build in the phase order of §19 and do not start a phase before the previous phase's
-exit criterion is demonstrated locally. Put new code at the repo root per the layout in
-§6 (`app/`, `alembic/`, `tests/`, `scripts/`), not under `dev/`.
+Phases 0–6 are implemented and committed: auth/tenancy, documents, ingestion worker,
+embeddings, hybrid search, hardening (rate limits, metrics, purge tooling). Run
+`uv run pytest` to see the passing suite. New work must follow the invariants below
+and the phase order in the (local) plan. Put new code at the repo root per the layout
+in §6 (`app/`, `alembic/`, `tests/`, `scripts/`), not under `dev/`.
 
 ## Stack (locked — do not substitute)
 

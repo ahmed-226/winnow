@@ -179,7 +179,10 @@ uv run python scripts/loadtest.py --tenant acme --email admin@acme.example \
 
 Reports req/s and p50/p95/p99/max. For load testing, temporarily raise
 `RL_SEARCH_PER_MINUTE` (or expect and accept the `429` tail — the script reports its
-count). Baseline on a dev box: see `dev/docs/phase-6-implementation.md`.
+count). Baseline on a dev box (10 concurrent, 20 s, empty tenant index, fake
+provider): 126.5 req/s, p50 78 ms, p95 94 ms, p99 125 ms, max 157 ms, zero errors —
+this measures request overhead; hybrid SQL latency at scale is benchmarked separately
+(5,001 chunks, HNSW ≈ 78 ms).
 
 ### Runbook
 
