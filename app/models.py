@@ -3,15 +3,19 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime
+from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
     CHAR,
     BigInteger,
     Boolean,
     CheckConstraint,
+    Computed,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     String,
     Text,
@@ -28,6 +32,13 @@ class DocumentStatus(enum.StrEnum):
     PENDING = "pending"
     PROCESSING = "processing"
     READY = "ready"
+    FAILED = "failed"
+
+
+class JobStatus(enum.StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
     FAILED = "failed"
 
 
@@ -208,3 +219,93 @@ class Document(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class IngestionJob(Base):
+    __tablename__ = "ingestion_jobs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["document_id", "tenant_id"],
+            ["documents.id", "documents.tenant_id"],
+            name="ingestion_jobs_document_id_tenant_id_fkey",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("document_id", name="ingestion_jobs_document_id_key"),
+        Index("ingestion_jobs_status_updated_idx", "status", "updated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[JobStatus] = mapped_column(
+        postgresql.ENUM(
+            JobStatus,
+            name="job_status",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        server_default=text("'queued'"),
+    )
+    attempts: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(nullable=False, server_default=text("3"))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    queued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DocumentChunk(Base):
+    __tablename__ = "document_chunks"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["document_id", "tenant_id"],
+            ["documents.id", "documents.tenant_id"],
+            name="document_chunks_document_id_tenant_id_fkey",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("document_id", "chunk_index", name="document_chunks_index_key"),
+        CheckConstraint("chunk_index >= 0", name="document_chunks_index_nonnegative"),
+        CheckConstraint("length(content) > 0", name="document_chunks_content_nonempty"),
+        Index("chunks_tenant_idx", "tenant_id"),
+        Index(
+            "chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+            postgresql_with={"m": 16, "ef_construction": 64},
+        ),
+        Index("chunks_fts_gin", "fts_doc", postgresql_using="gin"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    meta: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", postgresql.JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    embedding: Mapped[list[float]] = mapped_column(Vector(1536), nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(64), nullable=False)
+    token_estimate: Mapped[int | None] = mapped_column()
+    fts_doc: Mapped[Any] = mapped_column(
+        postgresql.TSVECTOR,
+        Computed("to_tsvector('english', content)", persisted=True),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
