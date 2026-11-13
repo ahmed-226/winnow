@@ -1,0 +1,26 @@
+# Normalize all text files to LF in the repository; working copy follows the OS.
+* text=auto
+
+# Source and config
+*.py text
+*.toml text
+*.yml text
+*.yaml text
+*.md text
+*.sql text
+*.mako text
+*.ini text
+*.cfg text
+*.txt text
+
+# Scripts need LF so bash/docker exec behaves the same on every OS
+*.sh text eol=lf
+
+# Windows-only
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.pdf binary
