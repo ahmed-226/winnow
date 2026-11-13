@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 import uuid
 from datetime import datetime
 from typing import Any, Literal
@@ -268,3 +269,47 @@ class DocumentPatchRequest(_RequestModel):
             return normalize_roles(value)
         except RoleValidationError as exc:
             raise ValueError(str(exc)) from exc
+
+
+class SearchRequest(_RequestModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [{"query": "how many weeks of parental leave do I get?", "top_k": 8}]
+        },
+    )
+
+    query: str = Field(min_length=1, max_length=1_000)
+    top_k: int = Field(default=10, ge=1, le=50)
+
+    @field_validator("query")
+    @classmethod
+    def _clean_query(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Query must not be blank.")
+        if any(unicodedata.category(char) == "Cc" and char not in "\t\n\r" for char in stripped):
+            raise ValueError("Query must not contain control characters.")
+        return stripped
+
+
+class SearchResultItem(BaseModel):
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    title: str
+    source_type: str
+    chunk_index: int
+    content: str
+    metadata: dict[str, Any]
+    score: float
+    dense_rank: int | None
+    sparse_rank: int | None
+    sparse_score: float | None
+    cosine_distance: float | None
+
+
+class SearchResponse(BaseModel):
+    query: str
+    mode: Literal["hybrid", "sparse_only"]
+    took_ms: int
+    results: list[SearchResultItem]

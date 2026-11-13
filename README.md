@@ -68,6 +68,21 @@ Behavior:
 - ACL-hidden or cross-tenant documents return `404`, not `403`.
 - Documents stay `pending` until the async ingestion worker processes them.
 
+### Search
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/v1/search` | bearer | Hybrid dense + sparse retrieval, RRF-fused, ACL-filtered |
+
+Request: `{"query": "how many weeks of parental leave?", "top_k": 8}` — `query` is 1–1,000
+characters (trimmed, no control characters), `top_k` defaults to 10 and is capped at 50.
+
+Response: ranked chunks with `score` (RRF), plus `dense_rank`, `sparse_rank`,
+`sparse_score`, and `cosine_distance` so relevance can be debugged. `mode` is `hybrid`, or
+`sparse_only` when the query embedding failed after retries — a degraded response is
+always visible, never silent. Only `ready` documents are searchable; empty ACLs are
+tenant-wide and `tenant_admin` bypasses document ACLs but never tenant isolation.
+
 ## Error format
 
 All errors use `application/problem+json` (`type`, `title`, `status`, `detail`, optional
