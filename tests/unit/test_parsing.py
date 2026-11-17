@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pymupdf
 import pytest
 
@@ -63,16 +65,17 @@ def test_pdf_extraction_with_pages() -> None:
     assert [block.page for block in blocks if "Second page" in block.text] == [2]
 
 
-def test_encrypted_pdf_is_rejected() -> None:
+def test_encrypted_pdf_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "enc.pdf"
     document = pymupdf.open()
     document.new_page()
     document.save(
-        "C:/Users/ahmed/AppData/Local/Temp/opencode/enc.pdf",
+        str(path),
         encryption=pymupdf.PDF_ENCRYPT_AES_256,
         owner_pw="owner",
         user_pw="user",
     )
-    data = open("C:/Users/ahmed/AppData/Local/Temp/opencode/enc.pdf", "rb").read()
+    data = path.read_bytes()
     document.close()
     with pytest.raises(ParseFailure):
         parse(data, source_type="pdf", pdf_max_pages=10)
