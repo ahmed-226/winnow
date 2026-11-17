@@ -100,6 +100,11 @@ services:
       DATABASE_MIGRATION_URL: postgresql+asyncpg://rag_owner:rag_owner@postgres:5432/rag
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT_URL: http://minio:9000
+      WORKER_METRICS_PORT: "9100"
+    # Ingest/document-embedding counters live in this process, so the worker
+    # serves its own /metrics; Prometheus scrapes it at worker:9100.
+    ports:
+      - "9100:9100"
     depends_on:
       postgres:
         condition: service_healthy

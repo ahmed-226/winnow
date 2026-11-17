@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     ingest_sweeper_interval_seconds: int = 60
     worker_job_timeout_seconds: int = 900
     worker_concurrency: int = 2
+    # Prometheus scrape endpoint served by the worker process; 0 disables it.
+    worker_metrics_port: int = 9100
 
     # Object storage
     s3_endpoint_url: str | None = None

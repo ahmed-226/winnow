@@ -8,9 +8,11 @@ from pathlib import Path
 import boto3
 import pytest
 from httpx import ASGITransport, AsyncClient
+from prometheus_client import REGISTRY, generate_latest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.services.ingestion import Outcome
 from app.services.maintenance import (
     delete_orphan_objects,
     find_orphan_objects,
@@ -18,6 +20,7 @@ from app.services.maintenance import (
 )
 from app.services.storage import StorageService
 from tests.integration.helpers import bearer, login, register_tenant
+from tests.integration.test_ingest_pipeline import drain, make_worker_context, upload_markdown
 
 MARKDOWN_CONTENT = b"# Employee Handbook\n\nParental leave is 16 weeks.\n"
 OTHER_CONTENT = b"# Architecture\n\nThe ingestion pipeline is asynchronous.\n"
@@ -115,6 +118,28 @@ async def test_metrics_report_search_and_upload_counters(app, client: AsyncClien
     assert "db_pool_in_use" in metrics.text
     assert 'queue_depth{stream="rag:ingest"}' in metrics.text
     assert 'queue_pending_messages{group="ingest-workers"}' in metrics.text
+
+
+async def test_worker_ingest_metrics_move_for_processed_job(app, client: AsyncClient) -> None:
+    """Issue #1: ingest counters are written in the worker process.
+
+    The API's `/metrics` cannot see them, which is why the worker serves its own
+    scrape endpoint. Prove the series that endpoint exposes actually increment.
+    """
+    labels = {"source_type": "markdown", "outcome": Outcome.DONE.value}
+    before = REGISTRY.get_sample_value("document_ingest_duration_seconds_count", labels) or 0.0
+
+    token = await _setup_admin(client, "workermetrics")
+    document = await upload_markdown(client, token)
+    assert document["status"] == "pending"
+    assert await drain(app, make_worker_context(app)) == 1
+
+    after = REGISTRY.get_sample_value("document_ingest_duration_seconds_count", labels)
+    assert after == before + 1
+    assert (
+        'document_ingest_duration_seconds_count{outcome="done",source_type="markdown"}'
+        in generate_latest(REGISTRY).decode()
+    )
 
 
 async def test_purge_expired_documents(app, client: AsyncClient, test_database, bucket_s3) -> None:

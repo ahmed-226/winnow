@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 import structlog
+from prometheus_client import start_http_server
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
@@ -194,6 +195,19 @@ async def _worker_loop(ctx: WorkerContext, redis: Redis) -> None:
 
 async def run() -> None:
     settings = Settings()  # type: ignore[call-arg]
+    # Ingest and document-embedding metrics are incremented in this process, so
+    # the worker needs its own scrape endpoint; the API's /metrics cannot see
+    # them. A busy port must not stop ingestion, so this is best effort.
+    if settings.worker_metrics_port > 0:
+        try:
+            start_http_server(settings.worker_metrics_port)
+            log.info("worker.metrics_started", port=settings.worker_metrics_port)
+        except OSError as exc:
+            log.warning(
+                "worker.metrics_unavailable",
+                port=settings.worker_metrics_port,
+                error=type(exc).__name__,
+            )
     engine = create_engine(settings, application_name="rag-worker", statement_timeout_ms=120_000)
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
     ctx = WorkerContext(

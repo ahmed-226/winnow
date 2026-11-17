@@ -116,8 +116,13 @@ Rejected requests are counted in `rate_limit_rejections_total{scope}`.
 
 ## Metrics
 
-`GET /metrics` serves Prometheus, combining the HTTP instrumentator
-(`http_requests_total`, `http_request_duration_seconds`) with application metrics:
+Prometheus metrics are served by **two** processes:
+
+- `GET :8000/metrics` — the API process: HTTP instrumentator series plus search, upload,
+  rate-limit, DB-pool, and queue metrics.
+- `GET :9100/metrics` — the worker process (`WORKER_METRICS_PORT`; `0` disables it).
+  Ingest and document-embedding counters are incremented inside the worker, so they are
+  only visible on this endpoint.
 
 | Metric | Type | Labels |
 |---|---|---|
