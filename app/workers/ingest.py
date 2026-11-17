@@ -195,9 +195,8 @@ async def _worker_loop(ctx: WorkerContext, redis: Redis) -> None:
 
 async def run() -> None:
     settings = Settings()  # type: ignore[call-arg]
-    # Ingest and document-embedding metrics are incremented in this process, so
-    # the worker needs its own scrape endpoint; the API's /metrics cannot see
-    # them. A busy port must not stop ingestion, so this is best effort.
+    # Ingest counters live in this process, so the worker serves its own scrape
+    # endpoint; a busy port must not stop ingestion.
     if settings.worker_metrics_port > 0:
         try:
             start_http_server(settings.worker_metrics_port)

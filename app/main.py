@@ -43,8 +43,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # provider instance. The Redis client doubles as the query-embedding cache.
     app.state.embeddings = build_embedding_provider(settings, cache=app.state.redis)
     # A separate sync client feeds the scrape-time gauges (queue depth/pending,
-    # DB pool usage). The worker serves its own /metrics, but the API's queue
-    # gauges stay here so one scrape shows queue state next to HTTP traffic.
+    # DB pool usage); the worker's /metrics does not expose them.
     metrics_redis = SyncRedis.from_url(settings.redis_url, decode_responses=True)
     install_process_gauges(
         engine,

@@ -121,11 +121,7 @@ async def test_metrics_report_search_and_upload_counters(app, client: AsyncClien
 
 
 async def test_worker_ingest_metrics_move_for_processed_job(app, client: AsyncClient) -> None:
-    """Issue #1: ingest counters are written in the worker process.
-
-    The API's `/metrics` cannot see them, which is why the worker serves its own
-    scrape endpoint. Prove the series that endpoint exposes actually increment.
-    """
+    """Ingest counters are worker-only; prove they reach its registry."""
     labels = {"source_type": "markdown", "outcome": Outcome.DONE.value}
     before = REGISTRY.get_sample_value("document_ingest_duration_seconds_count", labels) or 0.0
 
