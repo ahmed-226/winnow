@@ -88,3 +88,101 @@ Windows PowerShell equivalents belong in `README.md`; do not add a `make` depend
 LLM answer generation, OCR, web UI, zip uploads, cross-tenant sharing, per-chunk ACLs,
 billing/metering, Kubernetes, real BM25 via ParadeDB, automatic embedding-model migration.
 See §3.2 before extending scope.
+
+## Container image (build rules)
+
+There is exactly **one** image, `winnow-api:latest`, built from the root `Dockerfile`
+with `build: .` in `docker-compose.yml`. Both `api` and `worker` reuse it and differ
+only by `command`. Never add a second Dockerfile or a per-service image.
+
+### Canonical build
+
+Run from WSL inside the repo root (not PowerShell, to avoid path translation):
+
+```bash
+docker compose build api        # builds winnow-api; worker reuses the same image
+docker compose up -d            # api, worker, postgres, redis, minio
+docker compose ps
+curl -fsS http://localhost:8000/healthz
+```
+
+- Build **once** with `docker compose build api`. Do not run `--build` on every
+  `up` and do not build `api` and `worker` separately — that only churns cache.
+- If compose is unavailable, `docker buildx build --load -t winnow-api:latest .`
+  is acceptable; the tag must stay `winnow-api:latest`.
+- **Never** pass `--no-cache` unless `pyproject.toml`/`uv.lock` changed or the
+  build is provably broken. Each no-cache rebuild recreates every layer and is the
+  main source of multi-GB BuildKit cache growth.
+- Do not add `--pull` to routine builds. Base images are pinned:
+  `python:3.12-slim` and `ghcr.io/astral-sh/uv:0.13.1`.
+
+### Layer and dependency rules
+
+- `COPY pyproject.toml uv.lock ./` + `uv sync --frozen --no-dev --no-install-project`
+  must stay **before** `COPY . .`. Never move source copying above dependency
+  installation.
+- Only `uv sync --frozen`. Never run `uv lock`, `uv add`, or `pip install` inside
+  the build; update `uv.lock` in the workspace and commit it.
+- Any new OS package goes in one combined layer placed before `COPY . .`:
+  `RUN apt-get update && apt-get install -y --no-install-recommends <pkgs> && rm -rf /var/lib/apt/lists/*`
+- Keep `USER appuser` (uid 10001). The image must never run as root.
+- Runtime config comes from `env_file: .env` in compose. Never `COPY .env`,
+  keys, or tokens into the image.
+
+### `.dockerignore` is part of the build contract
+
+The build context stays under 1 MB. Keep excluding `.git`,
+`.venv` (~488 MB), `dev/`, `tests/`, `docker/`, `deploy/`, `__pycache__`, `*.py[cod]`,
+`.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.env`. Also add if missing:
+`AGENTS.md`, `README.md`, `.github/`, `.gitattributes`, `.gitignore`.
+
+Verify the context stayed small with:
+
+```bash
+du -sh --exclude=.git --exclude=.venv --exclude=dev --exclude=tests \
+      --exclude=docker --exclude=.pytest_cache --exclude=.mypy_cache \
+      --exclude=.ruff_cache .
+```
+
+Never add a `COPY` of files that `.dockerignore` excludes.
+
+### After a build session: cap the cache
+
+BuildKit cache lives in `/var/lib/containerd` inside WSL and grows ~1 GB per
+rebuild of this image. Reclaim it after heavy rebuild days:
+
+```bash
+docker system df                              # inspect RECLAIMABLE
+docker buildx prune -f --keep-storage=3GB     # keep recent layers, drop older ones
+docker image prune -f                         # dangling <none> images only
+```
+
+**Never** run `docker system prune -a --volumes`, `docker volume prune`, or
+`docker compose down -v`: they delete tagged images and the `pgdata` /
+`redisdata` / `miniodata` volumes (all tenant data). Tagged images and named
+volumes are off-limits unless the user explicitly asks.
+
+If WSL storage is tight:
+
+```bash
+sudo fstrim -av
+# then in Windows: wsl --shutdown
+# elevated: diskpart -> select vdisk file="...\ext4.vhdx"
+#           -> attach vdisk readonly -> compact vdisk -> detach vdisk
+```
+
+The `ext4.vhdx` is non-sparse, so it only shrinks after `fstrim` plus an offline
+compact. Do not use `wsl --manage Ubuntu --set-sparse true --allow-unsafe`.
+
+### Verify the build
+
+```bash
+docker compose config --images    # only winnow-api for api/worker
+docker image inspect winnow-api:latest \
+  --format '{{.Config.User}} | {{.Config.Cmd}} | {{.Config.ExposedPorts}}'
+# expect: appuser | [uvicorn app.main:app --host 0.0.0.0 --port 8000] | map[8000/tcp:{}]
+docker compose run --rm --no-deps api python -c "import app.main; print('ok')"
+```
+
+`tests/` is excluded from the image, so run `uv run pytest` on the host, not in
+the container. `docker compose run api uv run pytest` will fail by design.

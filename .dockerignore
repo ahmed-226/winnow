@@ -1,5 +1,7 @@
 .git
 .gitignore
+.gitattributes
+.github
 .venv
 __pycache__
 *.py[cod]
@@ -13,4 +15,5 @@ dev
 tests
 docker
 deploy
+AGENTS.md
 README.md
