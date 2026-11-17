@@ -144,6 +144,27 @@ Alert-worthy: queue depth growing for 10 minutes, ingest failure rate > 5%, sear
 
 Label values are bounded enums — never document text, query text, or tenant IDs.
 
+### Prometheus and Grafana
+
+An optional compose profile runs Prometheus and Grafana with pinned images, a scrape
+config for both endpoints, alert rules, and a provisioned dashboard:
+
+```bash
+docker compose --profile observability up -d
+# Prometheus: http://localhost:9090  (targets, rules, ad-hoc queries)
+# Grafana:    http://localhost:3000  (admin / GRAFANA_ADMIN_PASSWORD, default "admin")
+```
+
+Prometheus scrapes `api:8000` and `worker:9100`; the rules in
+`deploy/prometheus/alerts.yml` cover scrape targets down, a growing ingestion backlog,
+ingest failure rate > 5%, search p95 > 1 s, and embedding errors > 10%. Grafana
+provisions the `Winnow Overview` dashboard
+(`deploy/grafana/dashboards/winnow-overview.json`) automatically. Set
+`GRAFANA_ADMIN_PASSWORD` before exposing Grafana beyond localhost.
+
+The two containers keep their own named volumes (`prometheusdata`, `grafanadata`), so
+history survives `docker compose down`.
+
 ## Operations
 
 ### Ingestion worker

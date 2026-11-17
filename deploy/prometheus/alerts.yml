@@ -1,0 +1,69 @@
+groups:
+  - name: winnow
+    rules:
+      - alert: WinnowTargetDown
+        expr: up{job=~"api|worker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} target is down"
+          description: >-
+            Prometheus has failed to scrape {{ $labels.job }} for 2 minutes.
+            Check the container and its metrics port.
+
+      - alert: WinnowQueueBacklogGrowing
+        expr: queue_depth{job="api"} > 100 and delta(queue_depth{job="api"}[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ingestion queue is backing up"
+          description: >-
+            queue_depth is {{ $value }} and has been growing for 10 minutes.
+            Check worker health and the Gemini embedding quota.
+
+      - alert: WinnowIngestFailureRateHigh
+        expr: >-
+          sum(rate(document_ingest_failures_total{job="worker"}[15m]))
+          /
+          clamp_min(sum(rate(document_ingest_duration_seconds_count{job="worker"}[15m])), 0.001)
+          > 0.05
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ingestion failure rate above 5%"
+          description: >-
+            More than 5% of ingestion attempts have failed over 15 minutes.
+            Inspect document_ingest_failures_total by error_code and the worker logs.
+
+      - alert: WinnowSearchLatencyHigh
+        expr: >-
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{job="api",handler="/api/v1/search"}[5m]))
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Search p95 above 1 s"
+          description: >-
+            Search p95 is {{ $value | humanizeDuration }}. Check DB load,
+            vector index health, and embedding latency.
+
+      - alert: WinnowEmbeddingErrorsHigh
+        expr: >-
+          sum(rate(embedding_requests_total{status="error"}[10m]))
+          /
+          clamp_min(sum(rate(embedding_requests_total[10m])), 0.001)
+          > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Embedding error rate above 10%"
+          description: >-
+            Embedding errors are above 10% over 10 minutes. Check the Gemini API
+            quota, key validity, and network reachability.

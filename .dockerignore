@@ -12,4 +12,5 @@ htmlcov
 dev
 tests
 docker
+deploy
 README.md
